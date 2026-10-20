@@ -6,6 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
+    "health": "node scripts/health-check.cjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
