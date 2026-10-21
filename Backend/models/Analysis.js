@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 const { Schema } = mongoose;
 
 const AnalysisSchema = new Schema({
+  // Owner of this record. Older rows without a user are not returned to any account.
+  user: { type: Schema.Types.ObjectId, ref: 'User', index: true },
   // Optional: a filename or URL if you store images elsewhere
   imageName: { type: String },
   // The raw result JSON returned by the AI or a structured summary

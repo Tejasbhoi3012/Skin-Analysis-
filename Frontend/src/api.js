@@ -1,9 +1,17 @@
+import { authFetch } from './auth';
+
 const jsonOrNull = async (res) => {
   try {
     return await res.json();
   } catch {
     return null;
   }
+};
+
+const authError = (res, fallback) => {
+  if (res.status === 401) return new Error('Your session expired. Please sign in again.');
+  if (res.status === 503) return new Error('The service is temporarily unavailable. Try again shortly.');
+  return new Error(fallback);
 };
 
 export async function checkHealth() {
@@ -19,11 +27,11 @@ export async function analyzeImage(file) {
   const form = new FormData();
   form.append('image', file);
 
-  const res = await fetch('/api/analyze-image', { method: 'POST', body: form });
+  const res = await authFetch('/api/analyze-image', { method: 'POST', body: form });
   const data = await jsonOrNull(res);
 
   if (!data) throw new Error('The server returned an invalid response.');
-  if (!data.result) throw new Error(data.error || 'Analysis failed.');
+  if (!data.result) throw (res.status === 401 ? authError(res, 'Analysis failed.') : new Error(data.error || 'Analysis failed.'));
 
   return {
     result: data.result,
@@ -32,38 +40,38 @@ export async function analyzeImage(file) {
 }
 
 export async function saveAnalysis({ imageName, result, notes, referToDerm }) {
-  const res = await fetch('/api/analyses', {
+  const res = await authFetch('/api/analyses', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ imageName, result, notes, referToDerm }),
   });
   const data = await jsonOrNull(res);
-  if (!res.ok || !data?.success) throw new Error(data?.error || 'Could not save the analysis.');
+  if (!res.ok || !data?.success) throw authError(res, data?.error || 'Could not save the analysis.');
   return data.analysis;
 }
 
 export async function listAnalyses() {
-  const res = await fetch('/api/analyses');
+  const res = await authFetch('/api/analyses');
   const data = await jsonOrNull(res);
-  if (!res.ok || !data?.success) throw new Error(data?.error || 'Could not load history.');
+  if (!res.ok || !data?.success) throw authError(res, data?.error || 'Could not load history.');
   return data.analyses;
 }
 
 export async function deleteAnalysis(id) {
-  const res = await fetch(`/api/analyses/${id}`, { method: 'DELETE' });
+  const res = await authFetch(`/api/analyses/${id}`, { method: 'DELETE' });
   const data = await jsonOrNull(res);
-  if (!res.ok || !data?.success) throw new Error(data?.error || 'Could not delete the analysis.');
+  if (!res.ok || !data?.success) throw authError(res, data?.error || 'Could not delete the analysis.');
   return true;
 }
 
 export async function askAssistant(prompt) {
-  const res = await fetch('/api/assistant', {
+  const res = await authFetch('/api/assistant', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt }),
   });
   const data = await jsonOrNull(res);
-  if (!data?.text) throw new Error(data?.error || 'The assistant did not return a reply.');
+  if (!data?.text) throw authError(res, data?.error || 'The assistant did not return a reply.');
   return {
     text: data.text,
     warning: data.success ? null : data.error || 'The AI model is unavailable. Showing fallback guidance.',
