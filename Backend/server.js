@@ -5,6 +5,10 @@ import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import mongoose from 'mongoose';
 import Analysis from './models/Analysis.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 dotenv.config();
 
@@ -21,19 +25,33 @@ const upload = multer({
 const PORT = process.env.PORT || 4000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/skin-ai';
 
-// Connect to MongoDB (optional; server will still run without DB)
-mongoose.connect(MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => console.log('MongoDB connected')).catch(err => console.warn('MongoDB connection failed:', err.message));
+// Connect to MongoDB (optional). If it is unreachable, history falls back to a local JSON file.
+mongoose.set('bufferCommands', false);
+mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 3000 })
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.warn('MongoDB unavailable, using local file storage for history:', err.message));
+const dbReady = () => mongoose.connection.readyState === 1;
+
+// --- Local JSON-file fallback store (used only when MongoDB is not connected) ---
+const DATA_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data', 'analyses.json');
+const readFileStore = async () => {
+  try { return JSON.parse(await fs.readFile(DATA_FILE, 'utf8')); } catch { return []; }
+};
+const writeFileStore = async (items) => {
+  await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
+  await fs.writeFile(DATA_FILE, JSON.stringify(items, null, 2));
+};
+const newId = () => crypto.randomBytes(12).toString('hex');
 
 // Initialize Gemini client
 // The SDK will also read GEMINI_API_KEY env var; we pass explicitly for clarity.
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+if (!ai) console.warn('GEMINI_API_KEY is not set; AI endpoints will return fallback responses.');
 
 // Helper: call Gemini with retries and exponential backoff
 async function generateWithRetry(params, retries = 3, initialDelay = 1000) {
   let attempt = 0;
+  if (!ai) throw new Error('GEMINI_API_KEY is not configured');
   while (attempt < retries) {
     try {
       const resp = await ai.models.generateContent(params);
@@ -49,7 +67,9 @@ async function generateWithRetry(params, retries = 3, initialDelay = 1000) {
       const msg = err?.message || err?.toString?.() || String(err);
       console.error(`Gemini call failed (attempt ${attempt}/${retries}):`, msg);
       // If last attempt, rethrow
-      if (attempt >= retries) throw err;
+      // Don't retry client errors (bad key, bad request) - they will never succeed
+      const status = err?.status ?? err?.code;
+      if (attempt >= retries || [400, 401, 403, 404].includes(status)) throw err;
       // Exponential backoff
       const delay = initialDelay * Math.pow(2, attempt - 1);
       await new Promise(r => setTimeout(r, delay));
@@ -128,35 +148,47 @@ app.get('/common-conditions', (req, res) => {
   res.json({ success: true, conditions });
 });
 
-// CRUD endpoints for analyses
-// Create an analysis entry
+// CRUD endpoints for analyses (MongoDB when connected, local JSON file otherwise)
 app.post('/api/analyses', async (req, res) => {
   try {
-    const { imageName, result, notes, referToDerm } = req.body;
-    const a = new Analysis({ imageName, result, notes, referToDerm });
-    const saved = await a.save();
-    res.json({ success: true, analysis: saved });
+    const { imageName, result, notes, referToDerm } = req.body || {};
+    if (result === undefined || result === null) {
+      return res.status(400).json({ success: false, error: 'Missing result' });
+    }
+    if (dbReady()) {
+      const saved = await new Analysis({ imageName, result, notes, referToDerm }).save();
+      return res.json({ success: true, analysis: saved });
+    }
+    const items = await readFileStore();
+    const now = new Date().toISOString();
+    const analysis = { _id: newId(), imageName, result, notes, referToDerm: Boolean(referToDerm), createdAt: now, updatedAt: now };
+    items.unshift(analysis);
+    await writeFileStore(items);
+    res.json({ success: true, analysis });
   } catch (err) {
     console.error('Create analysis error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// List analyses
 app.get('/api/analyses', async (req, res) => {
   try {
-    const list = await Analysis.find().sort({ createdAt: -1 }).limit(100);
-    res.json({ success: true, analyses: list });
+    if (dbReady()) {
+      const list = await Analysis.find().sort({ createdAt: -1 }).limit(100);
+      return res.json({ success: true, analyses: list });
+    }
+    res.json({ success: true, analyses: (await readFileStore()).slice(0, 100) });
   } catch (err) {
     console.error('List analyses error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// Get single analysis
 app.get('/api/analyses/:id', async (req, res) => {
   try {
-    const item = await Analysis.findById(req.params.id);
+    const item = dbReady()
+      ? (mongoose.isValidObjectId(req.params.id) ? await Analysis.findById(req.params.id) : null)
+      : (await readFileStore()).find(a => a._id === req.params.id);
     if (!item) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true, analysis: item });
   } catch (err) {
@@ -165,10 +197,22 @@ app.get('/api/analyses/:id', async (req, res) => {
   }
 });
 
-// Update analysis
 app.put('/api/analyses/:id', async (req, res) => {
   try {
-    const updated = await Analysis.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const { imageName, result, notes, referToDerm } = req.body || {};
+    const patch = Object.fromEntries(Object.entries({ imageName, result, notes, referToDerm }).filter(([, v]) => v !== undefined));
+    let updated = null;
+    if (dbReady()) {
+      if (mongoose.isValidObjectId(req.params.id)) updated = await Analysis.findByIdAndUpdate(req.params.id, patch, { new: true });
+    } else {
+      const items = await readFileStore();
+      const i = items.findIndex(a => a._id === req.params.id);
+      if (i >= 0) {
+        items[i] = { ...items[i], ...patch, updatedAt: new Date().toISOString() };
+        updated = items[i];
+        await writeFileStore(items);
+      }
+    }
     if (!updated) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true, analysis: updated });
   } catch (err) {
@@ -177,10 +221,17 @@ app.put('/api/analyses/:id', async (req, res) => {
   }
 });
 
-// Delete analysis
 app.delete('/api/analyses/:id', async (req, res) => {
   try {
-    const removed = await Analysis.findByIdAndDelete(req.params.id);
+    let removed = false;
+    if (dbReady()) {
+      removed = mongoose.isValidObjectId(req.params.id) && Boolean(await Analysis.findByIdAndDelete(req.params.id));
+    } else {
+      const items = await readFileStore();
+      const next = items.filter(a => a._id !== req.params.id);
+      removed = next.length !== items.length;
+      if (removed) await writeFileStore(next);
+    }
     if (!removed) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true });
   } catch (err) {
@@ -198,13 +249,10 @@ app.post('/api/assistant', async (req, res) => {
     // Build a safe system prompt to guide replies
     const systemPrompt = `You are a helpful, accurate, and cautious dermatology assistant. Provide clear, non-prescriptive information. If the user requests medical advice, include a disclaimer to consult a dermatologist.`;
 
-    const contents = [
-      { text: systemPrompt },
-      { text: prompt }
-    ];
+    const contents = String(prompt);
 
     try {
-      const response = await generateWithRetry({ model: 'gemini-2.5-flash', contents });
+      const response = await generateWithRetry({ model: 'gemini-2.5-flash', contents, config: { systemInstruction: systemPrompt } });
       const text = response?.text ?? JSON.stringify(response);
       return res.json({ success: true, text });
     } catch (err) {
@@ -226,7 +274,7 @@ app.post('/api/assistant', async (req, res) => {
  */
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+    if (!req.file) return res.status(400).json({ success: false, error: "No image uploaded" });
 
     const mimeType = req.file.mimetype || "image/jpeg";
     const base64 = req.file.buffer.toString("base64");
@@ -254,12 +302,17 @@ Provide numeric or short textual values only. No markdown, no extra commentary, 
     ];
 
     try {
-      const response = await generateWithRetry({ model: "gemini-2.5-flash", contents });
+      const response = await generateWithRetry({ model: "gemini-2.5-flash", contents, config: { responseMimeType: "application/json" } });
       const rawText = response?.text ?? JSON.stringify(response);
 
+      // Gemini sometimes wraps JSON in ```json fences or adds text; extract the object.
       let parsed;
       try {
-        parsed = JSON.parse(rawText);
+        const cleaned = rawText.replace(/```(?:json)?/gi, '').trim();
+        const first = cleaned.indexOf('{');
+        const last = cleaned.lastIndexOf('}');
+        parsed = JSON.parse(first >= 0 && last > first ? cleaned.slice(first, last + 1) : cleaned);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
       } catch (err) {
         parsed = { rawText };
       }
@@ -284,6 +337,14 @@ Provide numeric or short textual values only. No markdown, no extra commentary, 
     console.error("Analyze error:", err);
     return res.status(500).json({ error: err.message || "server error" });
   }
+});
+
+// Error handler (multer limits, bad JSON, etc.) - always respond with JSON
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const tooBig = err?.code === 'LIMIT_FILE_SIZE';
+  const status = tooBig ? 413 : (err?.status || err?.statusCode || 500);
+  res.status(status).json({ success: false, error: tooBig ? 'Image is larger than 10 MB' : (err?.message || 'server error') });
 });
 
 app.listen(PORT, () => {

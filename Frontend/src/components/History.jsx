@@ -131,8 +131,8 @@ export default function History() {
                     <div className="result-section">
                       <h3>Other possibilities</h3>
                       <div className="chips">
-                        {summary.differential.map((entry) => (
-                          <span className="chip" key={entry}>
+                        {summary.differential.map((entry, i) => (
+                          <span className="chip" key={`${entry}-${i}`}>
                             {titleCase(entry)}
                           </span>
                         ))}
@@ -143,8 +143,8 @@ export default function History() {
                     <div className="result-section">
                       <h3>Care suggestions</h3>
                       <ul className="recommendations">
-                        {summary.recommendations.map((entry) => (
-                          <li key={entry}>{entry}</li>
+                        {summary.recommendations.map((entry, i) => (
+                          <li key={i}>{entry}</li>
                         ))}
                       </ul>
                     </div>

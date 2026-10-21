@@ -72,8 +72,8 @@ export default function ResultCard({ result, warning, onSave, saving, saved }) {
         <div className="result-section">
           <h3>Other possibilities</h3>
           <div className="chips">
-            {differential.map((item) => (
-              <span key={item} className="chip">
+            {differential.map((item, i) => (
+              <span key={`${item}-${i}`} className="chip">
                 {titleCase(item)}
               </span>
             ))}
@@ -85,8 +85,8 @@ export default function ResultCard({ result, warning, onSave, saving, saved }) {
         <div className="result-section">
           <h3>General care suggestions</h3>
           <ul className="recommendations">
-            {recommendations.map((item) => (
-              <li key={item}>{item}</li>
+            {recommendations.map((item, i) => (
+              <li key={`${i}`}>{item}</li>
             ))}
           </ul>
         </div>
