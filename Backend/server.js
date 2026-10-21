@@ -13,13 +13,20 @@ import { fileURLToPath } from 'node:url';
 dotenv.config();
 
 const app = express();
+app.disable('x-powered-by');
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 // Multer memory storage (we'll convert to base64 inline for Gemini)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max here (adjust as needed)
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype?.startsWith('image/')) {
+      return cb(Object.assign(new Error('Only image uploads are supported'), { status: 400 }));
+    }
+    cb(null, true);
+  },
 });
 
 const PORT = process.env.PORT || 4000;
@@ -46,6 +53,7 @@ const newId = () => crypto.randomBytes(12).toString('hex');
 // Initialize Gemini client
 // The SDK will also read GEMINI_API_KEY env var; we pass explicitly for clarity.
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 if (!ai) console.warn('GEMINI_API_KEY is not set; AI endpoints will return fallback responses.');
 
 // Helper: call Gemini with retries and exponential backoff
@@ -55,12 +63,6 @@ async function generateWithRetry(params, retries = 3, initialDelay = 1000) {
   while (attempt < retries) {
     try {
       const resp = await ai.models.generateContent(params);
-      // Log trimmed response for debugging (avoid huge outputs)
-      try {
-        console.log('Gemini response (trim):', JSON.stringify(resp).slice(0, 2000));
-      } catch (e) {
-        console.log('Gemini response received');
-      }
       return resp;
     } catch (err) {
       attempt++;
@@ -77,8 +79,15 @@ async function generateWithRetry(params, retries = 3, initialDelay = 1000) {
   }
 }
 
-// Example health route
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+// Health route with the status of the AI and storage layers.
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    ai: Boolean(ai),
+    model: ai ? GEMINI_MODEL : null,
+    storage: dbReady() ? 'mongodb' : 'file',
+  });
+});
 
 // Return a curated list of common facial skin conditions and key symptoms
 app.get('/common-conditions', (req, res) => {
@@ -244,7 +253,12 @@ app.delete('/api/analyses/:id', async (req, res) => {
 app.post('/api/assistant', async (req, res) => {
   try {
     const { prompt } = req.body || {};
-    if (!prompt) return res.status(400).json({ success: false, error: 'Missing prompt' });
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ success: false, error: 'Missing prompt' });
+    }
+    if (prompt.length > 4000) {
+      return res.status(400).json({ success: false, error: 'Prompt is too long' });
+    }
 
     // Build a safe system prompt to guide replies
     const systemPrompt = `You are a helpful, accurate, and cautious dermatology assistant. Provide clear, non-prescriptive information. If the user requests medical advice, include a disclaimer to consult a dermatologist.`;
@@ -252,7 +266,7 @@ app.post('/api/assistant', async (req, res) => {
     const contents = String(prompt);
 
     try {
-      const response = await generateWithRetry({ model: 'gemini-2.5-flash', contents, config: { systemInstruction: systemPrompt } });
+      const response = await generateWithRetry({ model: GEMINI_MODEL, contents, config: { systemInstruction: systemPrompt } });
       const text = response?.text ?? JSON.stringify(response);
       return res.json({ success: true, text });
     } catch (err) {
@@ -302,7 +316,7 @@ Provide numeric or short textual values only. No markdown, no extra commentary, 
     ];
 
     try {
-      const response = await generateWithRetry({ model: "gemini-2.5-flash", contents, config: { responseMimeType: "application/json" } });
+      const response = await generateWithRetry({ model: GEMINI_MODEL, contents, config: { responseMimeType: 'application/json' } });
       const rawText = response?.text ?? JSON.stringify(response);
 
       // Gemini sometimes wraps JSON in ```json fences or adds text; extract the object.
@@ -337,6 +351,10 @@ Provide numeric or short textual values only. No markdown, no extra commentary, 
     console.error("Analyze error:", err);
     return res.status(500).json({ error: err.message || "server error" });
   }
+});
+
+app.use('/api', (req, res) => {
+  res.status(404).json({ success: false, error: 'Not found' });
 });
 
 // Error handler (multer limits, bad JSON, etc.) - always respond with JSON
