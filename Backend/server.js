@@ -5,6 +5,8 @@ import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import mongoose from 'mongoose';
 import Analysis from './models/Analysis.js';
+import authRoutes from './routes/auth.js';
+import { requireAuth } from './middleware/auth.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -53,7 +55,7 @@ const newId = () => crypto.randomBytes(12).toString('hex');
 // Initialize Gemini client
 // The SDK will also read GEMINI_API_KEY env var; we pass explicitly for clarity.
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 if (!ai) console.warn('GEMINI_API_KEY is not set; AI endpoints will return fallback responses.');
 
 // Helper: call Gemini with retries and exponential backoff
@@ -88,6 +90,9 @@ app.get('/api/health', (req, res) => {
     storage: dbReady() ? 'mongodb' : 'file',
   });
 });
+
+// Authentication (register, login, current session)
+app.use('/api/auth', authRoutes);
 
 // Return a curated list of common facial skin conditions and key symptoms
 app.get('/common-conditions', (req, res) => {
@@ -158,19 +163,21 @@ app.get('/common-conditions', (req, res) => {
 });
 
 // CRUD endpoints for analyses (MongoDB when connected, local JSON file otherwise)
-app.post('/api/analyses', async (req, res) => {
+// Every record is scoped to the signed-in account.
+app.post('/api/analyses', requireAuth, async (req, res) => {
   try {
     const { imageName, result, notes, referToDerm } = req.body || {};
     if (result === undefined || result === null) {
       return res.status(400).json({ success: false, error: 'Missing result' });
     }
+    const userId = req.user._id.toString();
     if (dbReady()) {
-      const saved = await new Analysis({ imageName, result, notes, referToDerm }).save();
+      const saved = await new Analysis({ user: req.user._id, imageName, result, notes, referToDerm }).save();
       return res.json({ success: true, analysis: saved });
     }
     const items = await readFileStore();
     const now = new Date().toISOString();
-    const analysis = { _id: newId(), imageName, result, notes, referToDerm: Boolean(referToDerm), createdAt: now, updatedAt: now };
+    const analysis = { _id: newId(), userId, imageName, result, notes, referToDerm: Boolean(referToDerm), createdAt: now, updatedAt: now };
     items.unshift(analysis);
     await writeFileStore(items);
     res.json({ success: true, analysis });
@@ -180,24 +187,26 @@ app.post('/api/analyses', async (req, res) => {
   }
 });
 
-app.get('/api/analyses', async (req, res) => {
+app.get('/api/analyses', requireAuth, async (req, res) => {
   try {
     if (dbReady()) {
-      const list = await Analysis.find().sort({ createdAt: -1 }).limit(100);
+      const list = await Analysis.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(100);
       return res.json({ success: true, analyses: list });
     }
-    res.json({ success: true, analyses: (await readFileStore()).slice(0, 100) });
+    const userId = req.user._id.toString();
+    res.json({ success: true, analyses: (await readFileStore()).filter(a => a.userId === userId).slice(0, 100) });
   } catch (err) {
     console.error('List analyses error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-app.get('/api/analyses/:id', async (req, res) => {
+app.get('/api/analyses/:id', requireAuth, async (req, res) => {
   try {
+    const userId = req.user._id.toString();
     const item = dbReady()
-      ? (mongoose.isValidObjectId(req.params.id) ? await Analysis.findById(req.params.id) : null)
-      : (await readFileStore()).find(a => a._id === req.params.id);
+      ? (mongoose.isValidObjectId(req.params.id) ? await Analysis.findOne({ _id: req.params.id, user: req.user._id }) : null)
+      : (await readFileStore()).find(a => a._id === req.params.id && a.userId === userId);
     if (!item) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true, analysis: item });
   } catch (err) {
@@ -206,16 +215,19 @@ app.get('/api/analyses/:id', async (req, res) => {
   }
 });
 
-app.put('/api/analyses/:id', async (req, res) => {
+app.put('/api/analyses/:id', requireAuth, async (req, res) => {
   try {
     const { imageName, result, notes, referToDerm } = req.body || {};
     const patch = Object.fromEntries(Object.entries({ imageName, result, notes, referToDerm }).filter(([, v]) => v !== undefined));
+    const userId = req.user._id.toString();
     let updated = null;
     if (dbReady()) {
-      if (mongoose.isValidObjectId(req.params.id)) updated = await Analysis.findByIdAndUpdate(req.params.id, patch, { new: true });
+      if (mongoose.isValidObjectId(req.params.id)) {
+        updated = await Analysis.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, patch, { new: true });
+      }
     } else {
       const items = await readFileStore();
-      const i = items.findIndex(a => a._id === req.params.id);
+      const i = items.findIndex(a => a._id === req.params.id && a.userId === userId);
       if (i >= 0) {
         items[i] = { ...items[i], ...patch, updatedAt: new Date().toISOString() };
         updated = items[i];
@@ -230,14 +242,15 @@ app.put('/api/analyses/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/analyses/:id', async (req, res) => {
+app.delete('/api/analyses/:id', requireAuth, async (req, res) => {
   try {
+    const userId = req.user._id.toString();
     let removed = false;
     if (dbReady()) {
-      removed = mongoose.isValidObjectId(req.params.id) && Boolean(await Analysis.findByIdAndDelete(req.params.id));
+      removed = mongoose.isValidObjectId(req.params.id) && Boolean(await Analysis.findOneAndDelete({ _id: req.params.id, user: req.user._id }));
     } else {
       const items = await readFileStore();
-      const next = items.filter(a => a._id !== req.params.id);
+      const next = items.filter(a => !(a._id === req.params.id && a.userId === userId));
       removed = next.length !== items.length;
       if (removed) await writeFileStore(next);
     }
@@ -250,7 +263,7 @@ app.delete('/api/analyses/:id', async (req, res) => {
 });
 
 // POST /api/assistant - proxy a text prompt to Gemini and return the model reply
-app.post('/api/assistant', async (req, res) => {
+app.post('/api/assistant', requireAuth, async (req, res) => {
   try {
     const { prompt } = req.body || {};
     if (!prompt || typeof prompt !== 'string') {
@@ -286,7 +299,7 @@ app.post('/api/assistant', async (req, res) => {
  * form-data field: "image" (file)
  * returns: parsed JSON result from Gemini (or raw text if parsing fails)
  */
-app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
+app.post("/api/analyze-image", requireAuth, upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: "No image uploaded" });
 

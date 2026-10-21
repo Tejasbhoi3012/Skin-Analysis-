@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import { saveAnalysis } from './api';
+import { fetchCurrentUser, readSession, signOut } from './auth';
 import { SAMPLE_RESULT, normalizeResult } from './data';
+import { Logo, Wordmark } from './components/Brand';
 import AppShell from './components/AppShell';
+import AuthPage from './components/AuthPage';
 import LandingPage from './components/LandingPage';
 import AnalyzePage from './components/AnalyzePage';
 import ResultPage from './components/ResultPage';
@@ -10,12 +13,31 @@ import Assistant from './components/Assistant';
 import Conditions from './components/Conditions';
 
 export default function App() {
+  const [cachedSession] = useState(readSession);
   const [view, setView] = useState('landing');
+  const [user, setUser] = useState(cachedSession?.user || null);
+  const [booting, setBooting] = useState(Boolean(cachedSession));
+  const [authMode, setAuthMode] = useState('signin');
   const [finderTab, setFinderTab] = useState('finder');
   const [analysis, setAnalysis] = useState(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    if (!cachedSession) return undefined;
+    let alive = true;
+    fetchCurrentUser()
+      .then((session) => {
+        if (alive) setUser(session?.user || null);
+      })
+      .finally(() => {
+        if (alive) setBooting(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -27,9 +49,37 @@ export default function App() {
     return () => clearTimeout(id);
   }, [toast]);
 
+  function requireAccount(nextView) {
+    if (user) {
+      setView(nextView);
+      return;
+    }
+    setAuthMode('signin');
+    setView('auth');
+  }
+
+  function openAuth(mode = 'signin') {
+    setAuthMode(mode);
+    setView('auth');
+  }
+
+  function handleAuthenticated(session) {
+    setUser(session.user);
+    setView('analyze');
+    setToast(`Welcome, ${session.user.name.split(' ')[0]}. Your workspace is ready.`);
+  }
+
+  function handleSignOut() {
+    signOut();
+    setUser(null);
+    setAnalysis(null);
+    setSaved(false);
+    setView('landing');
+  }
+
   function openFinder(tab = 'finder') {
     setFinderTab(tab);
-    setView('finder');
+    requireAccount('finder');
   }
 
   function openSampleReport() {
@@ -130,13 +180,38 @@ export default function App() {
     setView('result');
   }
 
+  if (booting) {
+    return (
+      <div className="app-boot">
+        <span className="app-boot-brand">
+          <Logo size={44} />
+          <Wordmark />
+        </span>
+        <span className="spinner" aria-label="Restoring your session" />
+      </div>
+    );
+  }
+
   if (view === 'landing') {
     return (
       <LandingPage
-        onStart={() => setView('analyze')}
+        user={user}
+        onStart={() => requireAccount('analyze')}
+        onSignIn={() => (user ? setView('analyze') : openAuth('signin'))}
+        onSignUp={() => (user ? setView('analyze') : openAuth('signup'))}
         onFindCare={() => openFinder('finder')}
-        onBrowseConditions={() => setView('conditions')}
-        onAssistant={() => setView('assistant')}
+        onBrowseConditions={() => requireAccount('conditions')}
+        onAssistant={() => requireAccount('assistant')}
+      />
+    );
+  }
+
+  if (view === 'auth') {
+    return (
+      <AuthPage
+        initialMode={authMode}
+        onAuthenticated={handleAuthenticated}
+        onBack={() => setView('landing')}
       />
     );
   }
@@ -144,11 +219,13 @@ export default function App() {
   return (
     <AppShell
       view={view}
+      user={user}
       activeNav={view === 'finder' ? finderTab : undefined}
-      onNavigate={setView}
-      onNewAnalysis={() => setView('analyze')}
+      onNavigate={requireAccount}
+      onNewAnalysis={() => requireAccount('analyze')}
       onOpenFinder={openFinder}
       onHome={() => setView('landing')}
+      onSignOut={handleSignOut}
       toast={toast}
     >
       {view === 'analyze' && (

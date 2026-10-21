@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   Bell,
@@ -8,19 +8,30 @@ import {
   Clock3,
   HelpCircle,
   Home,
+  LogOut,
   Menu,
   Plus,
   Search,
-  Settings,
   Stethoscope,
   X,
 } from 'lucide-react';
 import { BrandLockup } from './Brand';
-import { DOCTOR } from '../data';
+
+function initials(name = '') {
+  return (
+    name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0])
+      .join('')
+      .toUpperCase() || 'DS'
+  );
+}
 
 const NAV = [
   { id: 'analyze', label: 'Analyze', icon: Activity, badge: 'AI Ready' },
-  { id: 'finder', label: 'History', icon: Clock3, count: '12', target: 'history' },
+  { id: 'finder', label: 'History', icon: Clock3, target: 'history' },
   { id: 'assistant', label: 'Assistant', icon: Bot },
   { id: 'conditions', label: 'Conditions', icon: BookOpen },
   { id: 'finder', label: 'Find a Dermatologist', icon: Stethoscope, target: 'finder' },
@@ -28,15 +39,37 @@ const NAV = [
 
 export default function AppShell({
   view,
+  user,
   activeNav,
   onNavigate,
   onNewAnalysis,
   onOpenFinder,
   onHome,
+  onSignOut,
   children,
   toast,
 }) {
   const [open, setOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const profileRef = useRef(null);
+
+  useEffect(() => {
+    if (!profileOpen) return undefined;
+    const close = (event) => {
+      if (profileRef.current && !profileRef.current.contains(event.target)) {
+        setProfileOpen(false);
+      }
+    };
+    const escape = (event) => {
+      if (event.key === 'Escape') setProfileOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [profileOpen]);
 
   const go = (item) => {
     setOpen(false);
@@ -94,15 +127,23 @@ export default function AppShell({
         </div>
 
         <div className="sidebar-doctor">
-          <img src={DOCTOR.avatar} alt="" />
+          <span className="avatar-initials" aria-hidden="true">
+            {initials(user?.name)}
+          </span>
           <span className="sidebar-doctor-copy">
-            <strong>{DOCTOR.name}</strong>
+            <strong>{user?.name || 'Your account'}</strong>
             <small>
-              <span className="status-dot" /> {DOCTOR.role}
+              <span className="status-dot" /> Signed in securely
             </small>
           </span>
-          <button type="button" className="icon-button subtle" aria-label="Doctor settings">
-            <Settings size={17} strokeWidth={1.8} />
+          <button
+            type="button"
+            className="icon-button subtle"
+            aria-label="Sign out"
+            title="Sign out"
+            onClick={onSignOut}
+          >
+            <LogOut size={17} strokeWidth={1.8} />
           </button>
         </div>
       </aside>
@@ -142,7 +183,37 @@ export default function AppShell({
               <Plus size={17} strokeWidth={2.2} />
               New Analysis
             </button>
-            <img className="topbar-avatar" src={DOCTOR.avatar} alt="Dr. Ananya Rao" />
+            <div className="topbar-profile" ref={profileRef}>
+              <button
+                type="button"
+                className="topbar-profile-button"
+                onClick={() => setProfileOpen((value) => !value)}
+                aria-haspopup="menu"
+                aria-expanded={profileOpen}
+              >
+                <span className="avatar-initials" aria-hidden="true">
+                  {initials(user?.name)}
+                </span>
+              </button>
+
+              {profileOpen && (
+                <div className="profile-menu" role="menu">
+                  <div className="profile-menu-head">
+                    <span className="avatar-initials lg" aria-hidden="true">
+                      {initials(user?.name)}
+                    </span>
+                    <span>
+                      <strong>{user?.name}</strong>
+                      <small>{user?.email}</small>
+                    </span>
+                  </div>
+                  <button type="button" role="menuitem" onClick={onSignOut}>
+                    <LogOut size={16} strokeWidth={1.8} />
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 

@@ -120,6 +120,8 @@ export const SPECIALISTS = [
     distance: '2.8 km away',
     address: 'HAL 2nd Stage, Indiranagar Â· Accepts Teleconsult',
     accent: 'mint',
+    lat: 12.9702,
+    lng: 77.6401,
   },
   {
     id: 'skinworks',
@@ -132,6 +134,8 @@ export const SPECIALISTS = [
     distance: '4.1 km away',
     address: 'Old Airport Road, Kodihalli Â· Near Leela Palace',
     accent: 'plain',
+    lat: 12.9591,
+    lng: 77.6485,
   },
 ];
 

@@ -115,12 +115,16 @@ const FOOTER_COLUMNS = [
 ];
 
 export default function LandingPage({
+  user = null,
   onStart = () => {},
+  onSignIn = () => {},
+  onSignUp = () => {},
   onFindCare = () => {},
   onBrowseConditions = () => {},
   onAssistant = () => {},
 }) {
   const [openFaq, setOpenFaq] = useState(0);
+  const firstName = user?.name?.split(' ')[0] || '';
 
   return (
     <div className="landing">
@@ -147,11 +151,15 @@ export default function LandingPage({
           </nav>
 
           <div className="lp-header-actions">
-            <button type="button" className="lp-signin" onClick={onStart}>
-              Sign in
+            <button type="button" className="lp-signin" onClick={onSignIn}>
+              {user ? `Hi, ${firstName}` : 'Sign in'}
             </button>
-            <button type="button" className="btn btn-primary btn-sm" onClick={onStart}>
-              Start Free Analysis
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={user ? onStart : onSignUp}
+            >
+              {user ? 'Open Workspace' : 'Start Free Analysis'}
               <ArrowRight size={16} />
             </button>
           </div>
@@ -179,7 +187,11 @@ export default function LandingPage({
                 with board-certified dermatologists — without the guesswork or alarm.
               </p>
               <div className="lp-hero-actions">
-                <button type="button" className="btn btn-primary btn-lg" onClick={onStart}>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-lg"
+                  onClick={user ? onStart : onSignUp}
+                >
                   Analyze my skin (Free)
                   <ArrowRight size={18} />
                 </button>
@@ -532,11 +544,15 @@ export default function LandingPage({
               </span>
               <h2>Begin your assessment in under 60 seconds</h2>
               <p>
-                No credit card or cumbersome sign-up required. Clear, reassuring insights
-                delivered straight to your browser.
+                Free to start. A private account keeps your assessments, progression
+                history, and care referrals in one secure place.
               </p>
               <div className="lp-cta-actions">
-                <button type="button" className="btn btn-primary btn-lg" onClick={onStart}>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-lg"
+                  onClick={user ? onStart : onSignUp}
+                >
                   Start Free Skin Analysis
                 </button>
                 <button type="button" className="btn btn-light btn-lg" onClick={onFindCare}>

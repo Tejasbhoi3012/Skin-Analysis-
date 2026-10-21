@@ -12,10 +12,10 @@ import {
   Video,
 } from 'lucide-react';
 import { listAnalyses } from '../api';
-import { SAMPLE_HISTORY, SPECIALISTS, titleCase } from '../data';
+import { SPECIALISTS, titleCase } from '../data';
 import { HistoryRecordCard, SpecialistCard } from './Cards';
 import { EmptyState, PageHeader, Tabs } from './Ui';
-import mapImage from '../assets/map-bengaluru.jpg';
+import CareMap from './CareMap';
 import meeraAvatar from '../assets/specialist-meera.png';
 import resultSkin from '../assets/result-skin.jpg';
 
@@ -24,13 +24,6 @@ const FILTERS = [
   { id: 'rated', label: 'Top Rated (4.5+)' },
   { id: 'video', label: 'Video Consultation Available' },
   { id: 'insurance', label: 'Accepts Insurance' },
-];
-
-const HISTORY_COUNTS = [
-  { id: 'all', label: 'All', count: 12 },
-  { id: 'low', label: 'Low', count: 4 },
-  { id: 'medium', label: 'Medium', count: 6 },
-  { id: 'high', label: 'High', count: 2 },
 ];
 
 const SPECIALIST_META = {
@@ -91,15 +84,30 @@ export default function FinderPage({ onViewReport, onNotify = () => {}, initialT
   );
 
   const historyEntries = useMemo(() => {
-    const all = [...savedEntries, ...SAMPLE_HISTORY];
     const filtered =
-      historyFilter === 'all' ? all : all.filter((entry) => entry.severity === historyFilter);
+      historyFilter === 'all'
+        ? savedEntries
+        : savedEntries.filter((entry) => entry.severity === historyFilter);
     if (sort === 'confidence') {
       return [...filtered].sort((a, b) => b.confidence - a.confidence);
     }
     if (sort === 'oldest') return [...filtered].reverse();
     return filtered;
   }, [savedEntries, historyFilter, sort]);
+
+  const historyCounts = useMemo(
+    () => [
+      { id: 'all', label: 'All', count: savedEntries.length },
+      { id: 'low', label: 'Low', count: savedEntries.filter((entry) => entry.severity === 'low').length },
+      {
+        id: 'medium',
+        label: 'Medium',
+        count: savedEntries.filter((entry) => entry.severity === 'medium').length,
+      },
+      { id: 'high', label: 'High', count: savedEntries.filter((entry) => entry.severity === 'high').length },
+    ],
+    [savedEntries]
+  );
 
   const specialists = useMemo(() => {
     return SPECIALISTS.filter((specialist) => {
@@ -155,7 +163,7 @@ export default function FinderPage({ onViewReport, onNotify = () => {}, initialT
             id: 'history',
             label: 'Saved Skin History',
             icon: Clock3,
-            trailing: <span>12</span>,
+            trailing: <span>{savedEntries.length}</span>,
           },
         ]}
       />
@@ -217,7 +225,7 @@ export default function FinderPage({ onViewReport, onNotify = () => {}, initialT
 
           <div className="finder-grid">
             <section className="map-card">
-              <img src={mapImage} alt="Map of dermatology specialists around Indiranagar, Bengaluru" />
+              <CareMap specialists={specialists} onBook={book} />
             </section>
 
             <aside className="recommended">
@@ -273,7 +281,7 @@ export default function FinderPage({ onViewReport, onNotify = () => {}, initialT
             </div>
             <div className="history-controls">
               <div className="history-filters">
-                {HISTORY_COUNTS.map((filter) => (
+                {historyCounts.map((filter) => (
                   <button
                     type="button"
                     key={filter.id}
